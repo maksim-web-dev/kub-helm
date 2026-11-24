@@ -116,16 +116,11 @@ A developer pushes a broken version where the app can never connect to the datab
 
 ### How to reproduce
 
-In `app/main.py`, replace the body of `connect_to_db` with a failing version:
+In `app/main.py`, set the flag to `True`:
 
 ```python
-async def connect_to_db():
-    # To simulate a failed deployment, replace the body below with:
-    # logger.error("DB connection failed!")
-    global db_ready
-    await asyncio.sleep(20)
-    db_ready = True
-    logger.info("DB connection successful")
+# Set to True to simulate a failed deployment
+BAD_DEPLOY = True
 ```
 
 Then build and deploy:

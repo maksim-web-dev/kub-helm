@@ -22,6 +22,11 @@ POD_NAME = os.getenv("POD_NAME", "unknown")
 db_ready = False
 shutting_down = False
 
+# Set to True to simulate a failed deployment:
+# connect_to_db() will fail → db_ready stays False → /health always returns 503
+# → readinessProbe fails → Kubernetes blocks the rollout, old pods keep serving traffic.
+BAD_DEPLOY = False
+
 
 def _handle_sigterm(*_):
     global shutting_down
@@ -34,11 +39,12 @@ signal.signal(signal.SIGTERM, _handle_sigterm)
 
 async def connect_to_db():
     global db_ready
+    if BAD_DEPLOY:
+        logger.error("DB connection failed! (BAD_DEPLOY=True)")
+        return
     await asyncio.sleep(20)  # Imitation long connection to DB
     db_ready = True
     logger.info("DB connection successful")
-    # To simulate a failed deployment, replace the body above with:
-    # logger.error("DB connection failed!")
 
 
 @app.on_event("startup")
@@ -49,6 +55,8 @@ async def on_startup():
 @app.get("/")
 def hello():
     logger.info("Request successful handled!")
+    if BAD_DEPLOY:
+        return {"ok": False, "version": 10, "bad_deploy": True}
     return {"ok": True, "version": 10}
 
 
@@ -61,5 +69,5 @@ def health():
     if db_ready:
         logger.info("DB is ready!")
         return {"status": "ok"}
-    logger.info("DB doesn't ready")
+    logger.info("DB not ready")
     return JSONResponse(content={"status": "starting"}, status_code=503)
