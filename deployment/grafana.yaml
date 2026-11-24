@@ -35,14 +35,14 @@ data:
       "title": "Zero-Downtime Deployment Demo",
       "timezone": "browser",
       "schemaVersion": 38,
-      "version": 1,
+      "version": 2,
       "refresh": "5s",
       "time": { "from": "now-5m", "to": "now" },
       "panels": [
         {
           "id": 1,
           "title": "RPS per Pod",
-          "description": "Shows how traffic shifts from old pods to new ones during rolling update",
+          "description": "Traffic distribution across pods — shows how load shifts during rolling update",
           "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
           "targets": [
@@ -59,9 +59,12 @@ data:
         {
           "id": 2,
           "title": "Total RPS",
-          "description": "Total RPS — should not drop during deployment",
+          "description": "Aggregate request rate — must not drop during deployment",
           "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "fieldConfig": {
+            "defaults": { "color": { "fixedColor": "green", "mode": "fixed" } }
+          },
           "targets": [
             {
               "expr": "sum(rate(http_requests_total[30s]))",
@@ -72,39 +75,129 @@ data:
         },
         {
           "id": 3,
-          "title": "Error Rate (5xx)",
-          "description": "Must stay at 0 during zero-downtime deployment",
+          "title": "Success Rate",
+          "description": "Percentage of successful (non-5xx) requests — target: 100%",
           "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
           "fieldConfig": {
-            "defaults": { "color": { "fixedColor": "red", "mode": "fixed" } }
+            "defaults": {
+              "unit": "percent",
+              "min": 95,
+              "max": 100,
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "yellow", "value": 99 },
+                  { "color": "green", "value": 99.9 }
+                ]
+              },
+              "custom": { "lineWidth": 2 }
+            }
           },
           "targets": [
             {
-              "expr": "sum(rate(http_requests_total{status=~\"5..\"}[30s]))",
-              "legendFormat": "Errors/s",
+              "expr": "(1 - sum(rate(http_requests_total{status=~\"5..\"}[30s])) / sum(rate(http_requests_total[30s]))) * 100",
+              "legendFormat": "Success Rate %",
               "refId": "A"
             }
           ]
         },
         {
-          "id": 4,
-          "title": "Response Latency p95",
+          "id": 7,
+          "title": "HTTP Status Distribution",
+          "description": "2xx vs 5xx volume over time — green zone is healthy traffic",
           "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "options": {
+            "tooltip": { "mode": "multi" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "fillOpacity": 60,
+                "lineWidth": 1,
+                "stacking": { "mode": "normal", "group": "A" }
+              }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "2xx OK" },
+                "properties": [
+                  { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }
+                ]
+              },
+              {
+                "matcher": { "id": "byName", "options": "5xx Error" },
+                "properties": [
+                  { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{status=~\"2..\"}[30s]))",
+              "legendFormat": "2xx OK",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(http_requests_total{status=~\"5..\"}[30s]))",
+              "legendFormat": "5xx Error",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Response Latency",
+          "description": "p50 / p95 / p99 — latency spike during rolling update is expected and temporary",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
           "fieldConfig": {
             "defaults": { "unit": "s" }
           },
           "targets": [
             {
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket[30s])))",
+              "legendFormat": "p50",
+              "refId": "A"
+            },
+            {
               "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[30s])))",
               "legendFormat": "p95",
-              "refId": "A"
+              "refId": "B"
             },
             {
               "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[30s])))",
               "legendFormat": "p99",
-              "refId": "B"
+              "refId": "C"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "title": "Latency Heatmap",
+          "description": "Request duration distribution — bright = many requests at that latency bucket",
+          "type": "heatmap",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+          "options": {
+            "calculate": false,
+            "yAxis": { "unit": "s", "decimals": 3 },
+            "color": { "scheme": "Spectral", "steps": 64, "reverse": false },
+            "tooltip": { "show": true, "yHistogram": false },
+            "exemplars": { "color": "rgba(255,0,255,0.7)" }
+          },
+          "fieldConfig": {
+            "defaults": { "unit": "s" }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(http_request_duration_seconds_bucket[30s])) by (le)",
+              "legendFormat": "{{le}}",
+              "refId": "A",
+              "format": "heatmap"
             }
           ]
         },
@@ -112,7 +205,7 @@ data:
           "id": 5,
           "title": "Active Pods",
           "type": "stat",
-          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 },
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 24 },
           "targets": [
             {
               "expr": "count(up{job=\"myapp\"})",
@@ -125,7 +218,7 @@ data:
           "id": 6,
           "title": "Total Requests",
           "type": "stat",
-          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 16 },
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 24 },
           "targets": [
             {
               "expr": "sum(http_requests_total)",
