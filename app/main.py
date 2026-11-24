@@ -3,6 +3,7 @@ import logging
 import os
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
 logger = logging.getLogger(__name__)
@@ -45,4 +46,4 @@ def health():
         logger.info("DB is ready!")
         return {"status": "ok"}
     logger.info("DB doesn't ready")
-    return {"status": "starting"}, 503
+    return JSONResponse(content={"status": "starting"}, status_code=503)
