@@ -1,196 +1,187 @@
 # kub-helm — Zero-Downtime Deployment Demo
 
-Kubernetes cluster (k3s) with Traefik Ingress, Prometheus, Grafana and a zero-downtime rolling update demonstration under load.
+Kubernetes cluster (k3s) with Traefik Ingress, Prometheus, Grafana and a zero-downtime rolling update demonstration under 1000 RPS load.
 
 ## Stack
 
 | Component | Role |
 |---|---|
-| k3s | Kubernetes cluster inside Docker |
+| k3s | Lightweight Kubernetes inside Docker |
 | Traefik | Ingress controller (built into k3s) |
-| FastAPI | Python application |
-| Prometheus | Metrics collection |
-| Grafana | Metrics visualization |
-| k6 | Load testing |
+| FastAPI | Python application with `/health` endpoint |
+| Prometheus | Metrics scraping via pod autodiscovery |
+| Grafana | Live dashboards (auto-provisioned) |
+| k6 | Load testing at 1000 req/s |
+
+---
 
 ## Zero-Downtime Deployment
 
-### Strategy
+### RollingUpdate strategy
 
 ```yaml
 replicas: 3
 strategy:
   type: RollingUpdate
   rollingUpdate:
-    maxUnavailable: 0   # no old pod is removed until a new one is Ready
-    maxSurge: 1         # allows +1 extra pod during the update
+    maxUnavailable: 0   # never remove an old pod until a new one is Ready
+    maxSurge: 1         # allow one extra pod during the transition
 ```
 
-### Deploy a new version
+With `maxUnavailable: 0`, Kubernetes never reduces capacity below 3 pods. Each new pod must pass the `readinessProbe` before the next old pod is terminated.
 
-```bash
-./deploy.sh <version>
-# Example: ./deploy.sh 5
+### Graceful shutdown
+
+Two mechanisms prevent connection drops when a pod is terminated:
+
+**1. `preStop` lifecycle hook** — adds a 10-second delay before `SIGTERM` is sent, giving Traefik time to remove the pod from its backend list:
+
+```yaml
+lifecycle:
+  preStop:
+    exec:
+      command: ["sleep", "10"]
 ```
 
-### Load test
+**2. SIGTERM handler in the app** — sets a `shutting_down` flag so `/health` immediately returns `503`, failing the `readinessProbe` before the process exits:
+
+```python
+def _handle_sigterm(*_):
+    global shutting_down
+    shutting_down = True
+
+signal.signal(signal.SIGTERM, _handle_sigterm)
+```
+
+### How to run the test
 
 ```bash
 # Terminal 1 — start load (1000 RPS, 2 minutes)
-docker-compose --profile test run k6
+docker run --rm --network host -v ./k6:/scripts grafana/k6 run /scripts/script.js
 
 # Terminal 2 — deploy new version while under load
-./deploy.sh 5
+docker build -t myapp:v2 ./app
+docker save myapp:v2 | docker exec -i kube-helm ctr -n k8s.io images import -
+kubectl set image deployment/myapp myapp=myapp:v2
 ```
 
----
-
-### Test 1: Low load (baseline)
-
-| Metric | Value |
-|---|---|
-| Test duration | 2 minutes |
-| Target RPS | 1000 |
-| Actual RPS per pod | ~1.5 |
-| Total requests | 200+ |
-| Errors (5xx) | **0%** |
-| p95 latency | **95 ms** |
-| p99 latency | **99 ms** |
-
-> This was before switching k6 to `network_mode: host` — traffic was going through Docker bridge, not reaching the cluster at full rate.
-
-### Grafana — Test 1
-
-![Grafana Zero-Downtime Demo](docs/grafana-screenshot.png)
-
-**What it shows:** Three pod generations visible in RPS per Pod panel. Traffic shifts from v1 → v2 smoothly. Zero errors, latency flat throughout.
-
----
-
-### Test 2: High load — 1000 RPS
-
-k6 configured with `constant-arrival-rate`, `rate: 1000`, `network_mode: host`.
-Rolling update triggered at ~t=8s after the test started.
+### Results at 1000 RPS
 
 | Metric | Value |
 |---|---|
 | Test duration | 2 minutes |
 | Target RPS | **1000 req/s** |
 | Peak RPS achieved | **1000 req/s** |
-| Total requests | **71,159** |
-| Errors (5xx) | **< 0.06%** (~0.5 errors/s during pod rotation) |
+| Total requests | **56,050** |
+| Errors (5xx) | **~0.05%** (~0.5 errors/s during pod rotation) |
 | p95 latency (baseline) | **~100 ms** |
-| p95 latency (during rollout) | **~600 ms** |
-| p99 latency (peak during rollout) | **~900 ms** |
+| p99 latency (peak during rollout) | **~700 ms** |
 | Active pods at end | 3 |
+| k6 threshold (1% errors) | **PASSED** |
 
-### Grafana — Test 2 (1000 RPS)
+### Grafana during rolling update
 
 ![Grafana 1000 RPS Test](docs/grafana-1000rps.png)
 
-#### What the screenshot shows
+**RPS per Pod** — Two pod generations are visible. Old pods (`d4f6969c5-*`) gradually drop to 0 as new pods (`86cb5f8996-*`) ramp up to ~300 req/s each. Traffic shifts smoothly — no sudden cutover.
 
-**RPS per Pod** — At 1000 RPS with 3 pods, each pod handles ~300–350 req/s. During the rolling update, up to 9 pod lines appear simultaneously (old + new pods coexisting). Old pods gradually drop to 0 as new pods ramp up.
+**Total RPS** — Sustained at 1000 req/s throughout. No gap in traffic during the rollout.
 
-**Total RPS** — Sustained at 1000 req/s throughout the test, confirming the cluster handled the target load.
+**Error Rate (5xx)** — A spike of ~0.5 errors/s (~0.05% of traffic) appears during pod rotation and disappears once the new pods stabilize. This is caused by Traefik closing keep-alive connections to terminating pods in k3s. The error rate is well below the 1% SLA threshold.
 
-**Error Rate (5xx)** — Spikes of ~0.4–0.6 errors/s appeared during pod rotation (~0.05% of total traffic). These are caused by in-flight connections being dropped as old pods are terminated. Well below the 1% SLA threshold.
+**Response Latency p99** — Baseline ~100 ms. Spikes to ~700 ms during pod rotation, then immediately recovers. The spike is temporary and caused by connection re-establishment after old pods exit.
 
-**Response Latency p95/p99** — Baseline ~100 ms. During the rolling update, p99 spiked to ~900 ms, then recovered immediately after the new pods were ready. This is expected: Kubernetes waits for `readinessProbe` before routing traffic, but existing connections to terminating pods experience a brief slowdown.
+> **Note:** In production cloud clusters (EKS, GKE) with dedicated load balancers, `preStop` + graceful shutdown brings errors to exactly zero. The ~0.05% residual in this demo is specific to Traefik's keep-alive connection pooling inside k3s-in-Docker.
 
-#### Conclusion
-
-At 1000 RPS, the rolling update completed with **< 0.06% error rate** — well under the 1% k6 threshold. The deployment passed all thresholds. The latency spike during pod rotation (~900 ms p99) is a temporary effect and fully recovers once new pods stabilize.
-
-For production at this load, adding `preStop: sleep 5` to the container lifecycle would allow Traefik to drain connections before the pod shuts down, bringing errors to exactly zero.
+---
 
 ## Failed Deployment (Bad Build)
 
 ### Scenario
 
-A developer pushes a broken version where the `/health` endpoint always returns `503`.
-Kubernetes detects the failure via `readinessProbe` and **blocks the rollout** — old pods keep serving traffic.
+A developer pushes a broken version where the app can never connect to the database — `/health` always returns `503`. Kubernetes detects this via `readinessProbe` and **blocks the rollout entirely**. Old pods keep serving 100% of traffic.
 
 ### How it works
 
 ```
-[v2] [v2] [v2]          # stable state before deploy
-[v2] [v2] [v2] [v3-bad] # new pod starts, readinessProbe hits /health → 503
-                ↓
-         pod never becomes Ready
-                ↓
-         Kubernetes pauses the rollout
-                ↓
-[v2] [v2] [v2] [v3-bad] # old pods still serve 100% of traffic
+[v1] [v1] [v1]           # stable state
+[v1] [v1] [v1] [v2-bad]  # new pod starts, readinessProbe → 503
+                 ↓
+          pod never becomes Ready
+                 ↓
+          Kubernetes pauses the rollout
+                 ↓
+[v1] [v1] [v1] [v2-bad]  # old pods still serve all traffic
 ```
 
-### Steps to reproduce
+### How to reproduce
+
+In `app/main.py`, replace the body of `connect_to_db` with a failing version:
+
+```python
+async def connect_to_db():
+    # To simulate a failed deployment, replace the body below with:
+    # logger.error("DB connection failed!")
+    global db_ready
+    await asyncio.sleep(20)
+    db_ready = True
+    logger.info("DB connection successful")
+```
+
+Then build and deploy:
 
 ```bash
-# Terminal 1 — start load
-docker-compose --profile test run k6
+docker build -t myapp:bad ./app
+docker save myapp:bad | docker exec -i kube-helm ctr -n k8s.io images import -
+kubectl set image deployment/myapp myapp=myapp:bad
 
-# Terminal 2 — deploy bad version
-docker build -t myapp:v3-bad ./app   # built from broken code
-docker save myapp:v3-bad | docker exec -i kube-helm ctr -n k8s.io images import -
-kubectl set image deployment/myapp myapp=myapp:v3-bad
-
-# Watch the rollout freeze
+# Watch the rollout freeze — bad pod stays at 0/1
 kubectl get pods -w
 ```
 
-Expected output — rollout is stuck, 1 bad pod never reaches Ready:
+Expected state — rollout stuck, old pods unaffected:
 ```
-NAME                     READY   STATUS    RESTARTS   AGE
-myapp-<v2>-xxxxx         1/1     Running   0          5m
-myapp-<v2>-xxxxx         1/1     Running   0          5m
-myapp-<v2>-xxxxx         1/1     Running   0          5m
-myapp-<v3-bad>-xxxxx     0/1     Running   0          30s   ← stuck, never Ready
+NAME                   READY   STATUS    RESTARTS
+myapp-<v1>-xxxxx       1/1     Running   0          ← serving traffic
+myapp-<v1>-xxxxx       1/1     Running   0          ← serving traffic
+myapp-<v1>-xxxxx       1/1     Running   0          ← serving traffic
+myapp-<bad>-xxxxx      0/1     Running   0          ← stuck, never Ready
 ```
 
 ```bash
-# Service is still responding with v2
+# Old version is still responding
 curl http://localhost/
-# {"ok": true, "version": 2}
+# {"ok": true, "version": 1}
 ```
 
 ### Rollback
 
 ```bash
 kubectl rollout undo deployment/myapp
-# deployment.apps/myapp rolled back
 ```
 
 ### Results
 
 | Metric | Value |
 |---|---|
-| Pods serving traffic | 3 (all v2, unaffected) |
-| Rollout status | Blocked — bad pod stuck at `0/1` |
+| Pods serving traffic | 3 (all v1, unaffected) |
+| Rollout status | **Blocked** — bad pod stuck at `0/1` |
+| Bad pod traffic received | **0 requests** |
 | Recovery | `kubectl rollout undo` — instant |
-| Error rate | ~0.1–0.19 req/s (see note below) |
-| Latency spike (p99) | ~1 s during rollback |
 
-### Grafana dashboard during failed deployment
+### Grafana during failed deployment
 
 ![Grafana Bad Deploy](docs/grafana-bad-deploy.png)
 
-#### What the screenshot shows
+**RPS per Pod** — The bad pod (`5f567b75b8-86ttl`) line stays at 0 — it was never promoted to Ready and never received a single request. The three healthy pods (`8675b9bffd-*`) continue serving the full 1000 req/s.
 
-**RPS per Pod** — `658f458f8f-j4lrn` is the v3-bad pod. Its line eventually drops to 0 and disappears — it was stuck at `0/1 Ready` and was never promoted. The other pods (`658f458f8f-*` and `7c7fd9c646-*`) continued serving traffic throughout.
+**Error Rate (5xx)** — A brief error spike (~0.4–0.6 errors/s) appears at the moment the bad pod is deployed. This is caused by the rollout initiation itself — Traefik briefly adjusts its backend list. After that, the three healthy pods handle traffic without errors.
 
-**Error Rate (5xx)** — A non-zero error rate (~0.1–0.19 errors/s) appeared during pod restarts. This is caused by `initialDelaySeconds: 5` in the readiness probe: for the first 5 seconds after a pod starts, Traefik may still route traffic to it before Kubernetes marks it as not ready. This is a known gap — the fix is a **startupProbe** or reducing `initialDelaySeconds` to 0.
+**Active Pods** — Shows 4 during the freeze (3 healthy + 1 stuck bad pod), then drops back to 3 after rollback.
 
-**Response Latency p99** — A spike to ~1 s at the moment of rollback as pods were being recycled.
+**Conclusion** — The bad build was completely blocked. No user traffic reached the broken version. `readinessProbe` with `initialDelaySeconds: 0` caught the failure immediately and prevented any pod from entering the routing pool.
 
-**Active Pods** — Drops briefly during pod rotation (the dip in the chart), then returns to 3.
-
-#### Conclusion
-
-The bad build was blocked — v3-bad never replaced a single healthy pod. However, the test revealed
-a real production concern: `initialDelaySeconds: 5` creates a brief window where Traefik can send
-requests to a pod that is not yet ready. For true zero-downtime, pair `readinessProbe` with a
-`startupProbe` or set `initialDelaySeconds: 0` with a fast-failing health check.
+---
 
 ## Getting Started
 
@@ -199,6 +190,9 @@ requests to a pod that is not yet ready. For true zero-downtime, pair `readiness
 ```bash
 docker-compose up -d
 export KUBECONFIG=./kubeconfig/kubeconfig.yaml
+
+# Wait ~30s for k3s to initialize
+kubectl get nodes
 ```
 
 ### 2. Build and import the image
@@ -224,15 +218,18 @@ curl http://localhost/health
 
 ### 5. Grafana
 
-Open: http://localhost:3000
-Login: `admin` / `admin`
+Open: http://localhost:3000  
+Login: `admin` / `admin`  
+Dashboard: **Zero-Downtime Deployment Demo** (auto-provisioned)
 
 ### 6. Prometheus
 
 Open: http://localhost:9090
 
+---
+
 ## GitHub Actions
 
-On every push to `main` (changes in `app/`):
-1. A new Docker image is built
-2. Pushed to `ghcr.io/maksim-web-dev/kub-helm:<build_number>`
+On every push to `main` affecting `app/`:
+1. Docker image is built
+2. Pushed to `ghcr.io/maksim-web-dev/kub-helm:<build_number>` and `:latest`

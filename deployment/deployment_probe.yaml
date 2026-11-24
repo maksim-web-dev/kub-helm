@@ -28,6 +28,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
           readinessProbe:
             httpGet:
               path: /health
