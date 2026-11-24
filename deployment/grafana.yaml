@@ -42,7 +42,7 @@ data:
         {
           "id": 1,
           "title": "RPS per Pod",
-          "description": "Видно як трафік переходить зі старих подів на нові під час rolling update",
+          "description": "Shows how traffic shifts from old pods to new ones during rolling update",
           "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
           "targets": [
@@ -59,7 +59,7 @@ data:
         {
           "id": 2,
           "title": "Total RPS",
-          "description": "Загальний RPS — не повинен падати під час деплою",
+          "description": "Total RPS — should not drop during deployment",
           "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
           "targets": [
@@ -73,7 +73,7 @@ data:
         {
           "id": 3,
           "title": "Error Rate (5xx)",
-          "description": "Має залишатись 0 під час zero-downtime деплою",
+          "description": "Must stay at 0 during zero-downtime deployment",
           "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
           "fieldConfig": {
