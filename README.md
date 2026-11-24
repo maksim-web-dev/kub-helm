@@ -83,13 +83,13 @@ kubectl set image deployment/myapp myapp=myapp:v2
 
 ![Grafana 1000 RPS Test](docs/grafana-1000rps.png)
 
-**RPS per Pod** — Two pod generations are visible. Old pods (`d4f6969c5-*`) gradually drop to 0 as new pods (`86cb5f8996-*`) ramp up to ~300 req/s each. Traffic shifts smoothly — no sudden cutover.
+**RPS per Pod** — two pod generations are visible. Old pods (`d4f6969c5-*`) gradually drop to 0 as new pods (`86cb5f8996-*`) ramp up to ~300 req/s each. Traffic shifts smoothly — no sudden cutover.
 
-**Total RPS** — Sustained at 1000 req/s throughout. No gap in traffic during the rollout.
+**Total RPS** — sustained at 1000 req/s throughout. No gap in traffic during the rollout.
 
-**Error Rate (5xx)** — A spike of ~0.5 errors/s (~0.05% of traffic) appears during pod rotation and disappears once the new pods stabilize. This is caused by Traefik closing keep-alive connections to terminating pods in k3s. The error rate is well below the 1% SLA threshold.
+**Error Rate (5xx)** — a spike of ~0.5 errors/s (~0.05% of traffic) appears during pod rotation and disappears once the new pods stabilize. This is caused by Traefik closing keep-alive connections to terminating pods in k3s. The error rate is well below the 1% SLA threshold.
 
-**Response Latency p99** — Baseline ~100 ms. Spikes to ~700 ms during pod rotation, then immediately recovers. The spike is temporary and caused by connection re-establishment after old pods exit.
+**Response Latency p99** — baseline ~100 ms. Spikes to ~700 ms during pod rotation, then immediately recovers. The spike is temporary and caused by connection re-establishment after old pods exit.
 
 > **Note:** In production cloud clusters (EKS, GKE) with dedicated load balancers, `preStop` + graceful shutdown brings errors to exactly zero. The ~0.05% residual in this demo is specific to Traefik's keep-alive connection pooling inside k3s-in-Docker.
 
@@ -173,13 +173,13 @@ kubectl rollout undo deployment/myapp
 
 ![Grafana Bad Deploy](docs/grafana-bad-deploy.png)
 
-**RPS per Pod** — The bad pod (`5f567b75b8-86ttl`) line stays at 0 — it was never promoted to Ready and never received a single request. The three healthy pods (`8675b9bffd-*`) continue serving the full 1000 req/s.
+**RPS per Pod** — the bad pod (`5f567b75b8-86ttl`) line stays at 0 — it was never promoted to Ready and never received a single request. The three healthy pods (`8675b9bffd-*`) continue serving the full 1000 req/s.
 
-**Error Rate (5xx)** — A brief error spike (~0.4–0.6 errors/s) appears at the moment the bad pod is deployed. This is caused by the rollout initiation itself — Traefik briefly adjusts its backend list. After that, the three healthy pods handle traffic without errors.
+**Error Rate (5xx)** — a brief error spike (~0.4–0.6 errors/s) appears at the moment the bad pod is deployed. This is caused by the rollout initiation itself — Traefik briefly adjusts its backend list. After that, the three healthy pods handle traffic without errors.
 
-**Active Pods** — Shows 4 during the freeze (3 healthy + 1 stuck bad pod), then drops back to 3 after rollback.
+**Active Pods** — shows 4 during the freeze (3 healthy + 1 stuck bad pod), then drops back to 3 after rollback.
 
-**Conclusion** — The bad build was completely blocked. No user traffic reached the broken version. `readinessProbe` with `initialDelaySeconds: 0` caught the failure immediately and prevented any pod from entering the routing pool.
+**Conclusion** — the bad build was completely blocked. No user traffic reached the broken version. `readinessProbe` with `initialDelaySeconds: 0` caught the failure immediately and prevented any pod from entering the routing pool.
 
 ---
 
