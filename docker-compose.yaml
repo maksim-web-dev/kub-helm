@@ -2,10 +2,13 @@ services:
   kube-helm:
     image: rancher/k3s:latest
     container_name: kube-helm
+    hostname: kube-helm
     privileged: true
     ports:
       - "6443:6443"
       - "80:80"
+      - "3000:3000"
+      - "9090:9090"
     volumes:
       - k3s-data:/var/lib/rancher/k3s
       - ./kubeconfig:/output
@@ -14,6 +17,15 @@ services:
     environment:
       - K3S_KUBECONFIG_OUTPUT=/output/kubeconfig.yaml
       - K3S_KUBECONFIG_MODE=666
+
+  k6:
+    image: grafana/k6
+    container_name: k6
+    volumes:
+      - ./k6:/scripts
+    command: run /scripts/script.js
+    profiles:
+      - test
 
 volumes:
   k3s-data:

@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import os
 
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -12,14 +14,17 @@ logger.addHandler(handler)
 
 app = FastAPI()
 
+Instrumentator().instrument(app).expose(app)
+
+POD_NAME = os.getenv("POD_NAME", "unknown")
 db_ready = False
 
 
 async def connect_to_db():
     global db_ready
-    await asyncio.sleep(20)  # імітація довгого підключення до БД
+    await asyncio.sleep(20)  # Imitation long connection to DB
     db_ready = True
-    logger.info("Успішно підключились до бази")
+    logger.info("DB connection successful")
 
 
 @app.on_event("startup")
@@ -29,15 +34,15 @@ async def on_startup():
 
 @app.get("/")
 def hello():
-    logger.info("Підпишись на канал Артьома Шумейко")
-    return {"ok": True}
+    logger.info("Request successful handled!")
+    return {"ok": True, version: 1}
 
 
 @app.get("/health")
 def health():
-    logger.info("Виклик /health ендпоінта")
+    logger.info("Call /health endpoint")
     if db_ready:
-        logger.info("База готова!")
+        logger.info("DB is ready!")
         return {"status": "ok"}
-    logger.info("База не готова")
+    logger.info("DB doesn't ready")
     return {"status": "starting"}, 503
