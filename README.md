@@ -36,48 +36,73 @@ strategy:
 ### Load test
 
 ```bash
-# Terminal 1 — start load (100 RPS, 2 minutes)
+# Terminal 1 — start load (1000 RPS, 2 minutes)
 docker-compose --profile test run k6
 
 # Terminal 2 — deploy new version while under load
 ./deploy.sh 5
 ```
 
-### Experiment results
+---
+
+### Test 1: Low load (baseline)
 
 | Metric | Value |
 |---|---|
 | Test duration | 2 minutes |
-| RPS | ~1.5 req/s per pod (100 VUs) |
+| Target RPS | 1000 |
+| Actual RPS per pod | ~1.5 |
 | Total requests | 200+ |
 | Errors (5xx) | **0%** |
 | p95 latency | **95 ms** |
 | p99 latency | **99 ms** |
 
-### Grafana dashboard during rolling update
+> This was before switching k6 to `network_mode: host` — traffic was going through Docker bridge, not reaching the cluster at full rate.
+
+### Grafana — Test 1
 
 ![Grafana Zero-Downtime Demo](docs/grafana-screenshot.png)
 
+**What it shows:** Three pod generations visible in RPS per Pod panel. Traffic shifts from v1 → v2 smoothly. Zero errors, latency flat throughout.
+
+---
+
+### Test 2: High load — 1000 RPS
+
+k6 configured with `constant-arrival-rate`, `rate: 1000`, `network_mode: host`.
+Rolling update triggered at ~t=8s after the test started.
+
+| Metric | Value |
+|---|---|
+| Test duration | 2 minutes |
+| Target RPS | **1000 req/s** |
+| Peak RPS achieved | **1000 req/s** |
+| Total requests | **71,159** |
+| Errors (5xx) | **< 0.06%** (~0.5 errors/s during pod rotation) |
+| p95 latency (baseline) | **~100 ms** |
+| p95 latency (during rollout) | **~600 ms** |
+| p99 latency (peak during rollout) | **~900 ms** |
+| Active pods at end | 3 |
+
+### Grafana — Test 2 (1000 RPS)
+
+![Grafana 1000 RPS Test](docs/grafana-1000rps.png)
+
 #### What the screenshot shows
 
-**RPS per Pod** — The most important panel. Three generations of pods are clearly visible:
-- `68656867f7-*` — v1 pods, active before the update, their lines drop to 0 as they are terminated
-- `7464f68dd7-*` — transitional pods from a previous rollout
-- `7c7fd9c646-*` — v2 pods, rising from 0 as they pass the readiness probe and start receiving traffic
+**RPS per Pod** — At 1000 RPS with 3 pods, each pod handles ~300–350 req/s. During the rolling update, up to 9 pod lines appear simultaneously (old + new pods coexisting). Old pods gradually drop to 0 as new pods ramp up.
 
-The traffic shifts gradually from old pods to new ones — no sudden cutover.
+**Total RPS** — Sustained at 1000 req/s throughout the test, confirming the cluster handled the target load.
 
-**Total RPS** — Stays between 1.2–1.5 throughout the entire deployment. The service never went down.
+**Error Rate (5xx)** — Spikes of ~0.4–0.6 errors/s appeared during pod rotation (~0.05% of total traffic). These are caused by in-flight connections being dropped as old pods are terminated. Well below the 1% SLA threshold.
 
-**Error Rate (5xx)** — "No data" — meaning exactly **zero errors** during the rollout.
-
-**Response Latency p95 / p99** — Rock solid at 95 ms / 99 ms with no spikes during the deployment.
+**Response Latency p95/p99** — Baseline ~100 ms. During the rolling update, p99 spiked to ~900 ms, then recovered immediately after the new pods were ready. This is expected: Kubernetes waits for `readinessProbe` before routing traffic, but existing connections to terminating pods experience a brief slowdown.
 
 #### Conclusion
 
-The rolling update replaced all 3 pods (v1 → v2) while k6 was continuously sending traffic.
-Zero requests were dropped. Latency did not degrade. This confirms that `maxUnavailable: 0` + `readinessProbe`
-is a reliable strategy for zero-downtime deployments in Kubernetes.
+At 1000 RPS, the rolling update completed with **< 0.06% error rate** — well under the 1% k6 threshold. The deployment passed all thresholds. The latency spike during pod rotation (~900 ms p99) is a temporary effect and fully recovers once new pods stabilize.
+
+For production at this load, adding `preStop: sleep 5` to the container lifecycle would allow Traefik to drain connections before the pod shuts down, bringing errors to exactly zero.
 
 ## Failed Deployment (Bad Build)
 

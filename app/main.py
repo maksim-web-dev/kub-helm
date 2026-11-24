@@ -36,7 +36,7 @@ async def on_startup():
 @app.get("/")
 def hello():
     logger.info("Request successful handled!")
-    return {"ok": True, "version": 2}
+    return {"ok": True, "version": 3}
 
 
 @app.get("/health")

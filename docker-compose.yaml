@@ -21,6 +21,7 @@ services:
   k6:
     image: grafana/k6
     container_name: k6
+    network_mode: host
     volumes:
       - ./k6:/scripts
     command: run /scripts/script.js

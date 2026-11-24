@@ -5,11 +5,11 @@ export const options = {
   scenarios: {
     load: {
       executor: 'constant-arrival-rate',
-      rate: 100,
+      rate: 1000,
       timeUnit: '1s',
       duration: '2m',
-      preAllocatedVUs: 50,
-      maxVUs: 200,
+      preAllocatedVUs: 500,
+      maxVUs: 1000,
     },
   },
   thresholds: {
@@ -19,7 +19,7 @@ export const options = {
 };
 
 export default function () {
-  const res = http.get('http://kube-helm/');
+  const res = http.get('http://localhost/');
   check(res, {
     'status is 200': (r) => r.status === 200,
   });
